@@ -1,0 +1,259 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import urllib2
+import re
+import os
+import math
+import getopt
+import sys
+from bs4 import BeautifulSoup
+
+class bcolors:
+    HEADER = '\033[95m'
+    FAIL = '\033[91m'
+    OKGREEN = '\033[92m'
+    ENDC = '\033[0m'
+
+
+try:
+    exec 'import patoolib'
+except ImportError:
+    bcolors.FAIL+\
+    'Para usar este script debes istalar el paquete patoolib:'+\
+    bcolors.ENDC+\
+    '   > pip install patoolib'
+
+
+def flag2country(flag):
+    return{
+        '1' : 'argentina',
+        '2' : 'chile',
+        '3' : 'venezuela',
+        '4' : 'brasil',
+        '5' : 'EEUU',
+        '6' : 'espanya',
+        '7' : 'mexico',
+        '8' : 'colombia',
+        '9' : 'paraguay',
+        '10' : 'bolivia',
+        '11' : 'uruguay',
+        '12' : 'peru'}.get(flag, 'desconocido')
+
+
+def dlfile(url, directori):
+    try:
+        name_search = re.search('id=(\d+)&u',url)
+        f_name = name_search.group(1)
+
+        # Make directory if it doesn't exist
+        if not os.path.exists(directori):
+            os.makedirs(directori)
+
+        # Get file on  memory
+        print "Descargando..."
+        f = urllib2.urlopen(url)
+
+        # Write file
+        f_comp = (directori+f_name).decode('utf8')
+        with open(f_comp, 'wb') as local_file:
+            local_file.write(f.read())
+        print "Hecho."
+
+        # Descomprimir
+        patoolib.extract_archive(f_comp,verbosity=-1, outdir=directori)
+        os.remove(f_comp)
+    except urllib2.HTTPError, e:
+        print "HTTP Error:", e.code, url
+    except urllib2.URLError, e:
+        print "URL Error:", e.reason, url
+
+def get_dl_link(soup):
+    button = soup.find('a', text = 'Bajar subtítulo ahora')
+    return button['href']
+
+def get_info(soup):
+    info = []
+    for section in soup.find_all(id='buscador_detalle_sub_datos'):
+        for content in section.contents:
+            if content.name=='b' and content.string=='Subido por:':
+                a = content.find_next('a', href=True)
+                if a is not None:
+                   author = a.string
+            if content.name=='img':
+                flag_search = re.search('(\d+).gif', content['src'])
+                country_num = flag_search.group(1)
+                country = flag2country(country_num)
+        info.append((country, author))
+    return info
+
+def get_links(soup):
+    links = []
+    for section in soup.find_all(id="menu_detalle_buscador"):
+         for button in section.find_all("a"):
+             links.append(button.get('href'))
+    return links
+
+def get_soup(url):
+    reponse = urllib2.urlopen(url)
+    html = reponse.read()
+    soup = BeautifulSoup(html, 'html.parser')
+    return soup
+
+def link_str(info):
+    return "Usuario: %s. País: %s" % info
+
+def value(link_t):
+    value = 0
+    info = link_t[1]
+    country = info[0]
+    if country == 'espanya':
+        value -= 10
+    elif country == 'chile':
+        value -= 5
+    return value
+
+def download(link, folder):
+    soup = get_soup(link)
+    dl_link = get_dl_link(soup)
+    dlfile(dl_link, folder)
+
+def format_num(num):
+    num_s = str(num)
+    if len(num_s)==1:
+        return "0"+num_s
+    else:
+        return num_s
+
+def error(message, help_text):
+    print bcolors.FAIL+"Error: "+message+bcolors.ENDC
+    print help_text
+    sys.exit()
+
+def query(search, n_subtitles, folder):
+    main_url = 'http://www.subdivx.com/index.php?buscar=%s&accion=5&masdesc=&subtitulos=1&realiza_b=%s'
+    search_url = main_url % (search.replace(' ', '+'), '%s')
+    links_page = 20.
+
+    # Find number of pages from where to search subtitles
+    try:
+        open_url = urllib2.urlopen(search_url)
+        main_html = open_url.read()
+        n_links_search = re.search('Se encontraron (\d+) ', main_html)
+        n_links = int(n_links_search.group(1))
+        n_pages = int(math.ceil(n_links / links_page))
+        print "Se han encontrado %u subtítulos de los cuales se descargaran %u" % \
+                    (n_links, n_subtitles)
+
+        # Find basic information regarding all subtitles
+        data = []
+        for page in range(n_pages):
+            print "Buscando informacion en la pagina %u de %u..." % (page+1, n_pages)
+            url = search_url % str(page+1)
+            soup = get_soup(url)
+            links = get_links(soup)
+            countries = get_info(soup)
+            data_page = zip(links, countries)
+            data += data_page
+        print "Hecho."
+
+        data_sorted = sorted(data, key=value)
+        i = 0
+        for link, info in data_sorted[:n_subtitles]:
+            i += 1
+            tuple_info = (i,) + info
+            print "Subtitulo %u. (Pais: %s, Usuario: %s):" % tuple_info
+            download(link, folder)
+        return True
+    except:
+        return False
+
+def parse_episodes(inp):
+    re_result = re.findall('(\d+)-(\d+)',inp)
+    if len(re_result)==0:
+        return [int(inp)]
+    elif len(re_result)==1:
+        init = int(re_result[0][0])
+        final = int(re_result[0][1])
+        return range(init, final+1)
+
+def main():
+    # Parsing command line arguments
+    help_text = """
+    USO:
+        subtitulos <serie> s<temporada>e<capitulo(s)> <opciones>
+            ejemplo: subtitulos "Game of Thrones" s03e05-09
+        o bien
+        subtitulos <serie> <opciones>
+            ejemplo: subtitulos "Game of Thrones" -s 3 -e 5-9
+
+    OPCIONES:
+        -h, --help                  Muestra este texto de ayuda
+        -s, --temporada TEMPORADA   Especifica la temporada deseada
+        -e, --capitulo CAPITULO     Especifica el capitulo/capitulos deseados
+        -n, --numero NUMERO         Numero de subtitulos a descargar por cada capitulo
+        -c, --carpeta CARPETA       Especifica la carpeta donde se guardaran los subtitulos
+    """
+
+    if len(sys.argv)<=2:
+        error("Se debe especificar una serie", help_text)
+    opts, args = getopt.getopt(sys.argv[2:], 'hs:e:n:c:', ['help','temporada=', \
+                                                        'capitulo=',\
+                                                        'numero=',\
+                                                        'carpeta'])
+    serie = sys.argv[1]
+    n_subtitles = 3
+    folder = ""
+    season = ""
+    episodes = []
+    for opt, arg in opts:
+        if opt in ('-h', '--help'):
+            print help_text
+        elif opt in ('-s', '--temporada'):
+            season = format_num(arg)
+        elif opt in ('-e', '--capitulo'):
+            episodes = parse_episodes(str(arg))
+        elif opt in ('-n', '--numero'):
+            n_subtitles = int(arg)
+        elif opt in ('-c',  '--carpeta'):
+            folder = arg
+            autofolder = False
+        else:
+            error("La opción %s es incorrecta" % opt)
+
+    re_result = re.findall('s(\d+)e(\d.*\d)',' '.join(sys.argv))
+    if len(re_result)==1:
+        if len(sys.argv) == 3 and len(season)==0 and len(episodes)==0:
+            season = re_result[0][0]
+            episodes = parse_episodes(re_result[0][1])
+        else:
+            error("Los argumentos no son correctos", help_text)
+
+    # Handle parameters not given
+    if len(season)==0:
+        error("Se debe especificar una temporada", help_text)
+    if len(episodes)==0:
+        error("Se debe especificar un capitulo", help_text)
+
+    fails = []
+    for episode in episodes:
+        print bcolors.HEADER+"Buscando serie '%s'. Temporada '%s'. Capitulo '%u'."\
+                            % (serie, season, episode) + bcolors.ENDC
+        search = "%s s%se%s" % (serie, format_num(season), format_num(episode))
+        if len(folder)==0 or autofolder:
+            folder= "%s/subtitulos/%s" % (os.path.expanduser('~'), search)
+            autofolder = True
+        if not query(search, n_subtitles, folder):
+            fails.append((season, episode))
+            print bcolors.FAIL + "Subtitulos del capitulo no encontrados"+bcolors.ENDC
+
+    # Prompt summary
+    if autofolder:
+        folder_s = os.path.expanduser('~')+'/subtitulos/'
+    else:
+        folder_s = folder
+    print bcolors.OKGREEN+"Se han guardado subtitulos para %u capitulo(s) en %s"\
+                            % (len(episodes)-len(fails), folder_s) + bcolors.ENDC
+
+if __name__ == '__main__':
+	main()

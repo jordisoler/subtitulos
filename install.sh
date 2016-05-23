@@ -10,4 +10,4 @@ elif [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
 else
     echo "Installer supports debian and mac only."
 fi
-pip install patoolib
+pip install -r requirements.txt
